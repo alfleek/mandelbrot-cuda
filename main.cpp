@@ -120,19 +120,20 @@ public:
     }
     
     void setParameters(double realCenter, double imagCenter, double distance, int maxIterations) {
-        // Keep internal state in sync with incoming parameters
+        // Incoming distance is the VISIBLE window complex height
         this->realCenter = realCenter;
         this->imagCenter = imagCenter;
-        this->distance = distance;
+        this->distance = distance; // keep as visible distance internally
         this->maxIterations = maxIterations;
         int textureWidth = static_cast<int>(windowWidth * OVERSCAN_FACTOR);
         int textureHeight = static_cast<int>(windowHeight * OVERSCAN_FACTOR);
+        double textureDistance = distance * static_cast<double>(OVERSCAN_FACTOR);
 
         // Update CPU computer with oversized texture dimensions
-        cpuComputer.setParameters(realCenter, imagCenter, distance, maxIterations, textureWidth, textureHeight);
+        cpuComputer.setParameters(realCenter, imagCenter, textureDistance, maxIterations, textureWidth, textureHeight);
         
         // Update renderer
-        renderer.setMandelbrotParams(realCenter, imagCenter, distance, maxIterations);
+        renderer.setMandelbrotParams(realCenter, imagCenter, textureDistance, maxIterations);
         
         // Resize results vector to match oversized texture size
         results.resize(static_cast<size_t>(textureWidth) * textureHeight);
@@ -274,10 +275,10 @@ public:
     }
     
     void handleParamsChanged(double real, double imag, double dist, int maxIter) {
-        // Sync internal state coming from renderer interactions
+        // Renderer reports TEXTURE complex height; convert to VISIBLE for internal state
         this->realCenter = real;
         this->imagCenter = imag;
-        this->distance = dist;
+        this->distance = dist / static_cast<double>(OVERSCAN_FACTOR);
         this->maxIterations = maxIter;
         int textureWidth = static_cast<int>(windowWidth * OVERSCAN_FACTOR);
         int textureHeight = static_cast<int>(windowHeight * OVERSCAN_FACTOR);

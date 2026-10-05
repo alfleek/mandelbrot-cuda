@@ -46,6 +46,9 @@ bool RendererSFML::init(int texWidth, int texHeight, int winWidth, int winHeight
     viewport.updateWindowSize(textureWidth, textureHeight);
     // visualViewport represents the visible window area
     visualViewport.updateWindowSize(winWidth, winHeight);
+    // Initialize visual viewport to use visible complex height
+    visualViewport.setCenter(viewport.getCenterReal(), viewport.getCenterImag());
+    visualViewport.setDistance(viewport.getDistance() / static_cast<double>(overscanFactor));
     
     std::cout << "SFML renderer initialized successfully" << std::endl;
     return true;
@@ -134,6 +137,30 @@ void RendererSFML::updateMandelbrotData(const int* data, int size) {
 void RendererSFML::setMandelbrotParams(double realCenter, double imagCenter, double distance, int maxIterations) {
     this->maxIterations = maxIterations;
     
+    // Dynamically adjust max iterations based on zoom level for better detail at high zoom
+    double zoomLevel = 1.0 / distance;
+    if (zoomLevel > 1000000) {  // At very high zoom levels
+        int suggestedIterations = static_cast<int>(std::min(10000.0, maxIterations * std::log10(zoomLevel / 1000.0)));
+        if (suggestedIterations > maxIterations) {
+            this->maxIterations = suggestedIterations;
+            std::cout << "[INFO] High zoom detected (zoom: " << static_cast<int>(zoomLevel) 
+                      << "), increasing max iterations to " << this->maxIterations << std::endl;
+        }
+    }
+    
+    // Check for precision limits
+    double aspect = static_cast<double>(viewport.getWidth()) / viewport.getHeight();
+    double realRange = distance * aspect;
+    double pixelWidth = realRange / viewport.getWidth();
+    double relativePrecision = pixelWidth / std::abs(realCenter);
+    
+    if (relativePrecision < 1e-14) {
+        std::cout << "[WARNING] Approaching double precision limits!" << std::endl;
+        std::cout << "[WARNING] Zoom level: " << static_cast<int>(zoomLevel) << std::endl;
+        std::cout << "[WARNING] Relative precision needed: " << relativePrecision << std::endl;
+        std::cout << "[WARNING] You may experience pixelation artifacts." << std::endl;
+    }
+    
     // Update viewport with new parameters
     viewport.setCenter(realCenter, imagCenter);
     viewport.setDistance(distance);
@@ -143,9 +170,9 @@ void RendererSFML::setMandelbrotParams(double realCenter, double imagCenter, dou
     sprite.setScale(1.0f, 1.0f);
     sprite.setPosition(0, 0);
     
-    // Update visual viewport to match
+    // Update visual viewport to match (visual uses visible complex height)
     visualViewport.setCenter(realCenter, imagCenter);
-    visualViewport.setDistance(distance);
+    visualViewport.setDistance(distance / static_cast<double>(overscanFactor));
     
     // Recreate color palette for new max iterations
     setupColorPalette();
@@ -279,7 +306,8 @@ void RendererSFML::handleWindowResize(int newWidth, int newHeight) {
     viewport.updateWindowSize(textureWidth, textureHeight);
     visualViewport.updateWindowSize(newWidth, newHeight);
     visualViewport.setCenter(viewport.getCenterReal(), viewport.getCenterImag());
-    visualViewport.setDistance(viewport.getDistance());
+    // visual uses visible complex height (window spans a subset of texture)
+    visualViewport.setDistance(viewport.getDistance() / static_cast<double>(overscanFactor));
 
     // Cancel any ongoing interaction
     isDragging = false;
@@ -320,9 +348,9 @@ void RendererSFML::handleMousePress(int x, int y, bool leftButton) {
         lastMousePos = startMousePos; // Initialize lastMousePos for delta calcs
         
         // Sync visual viewport to the committed viewport's state
-        // without corrupting its dimensions.
+        // Visual distance uses visible complex height
         visualViewport.setCenter(viewport.getCenterReal(), viewport.getCenterImag());
-        visualViewport.setDistance(viewport.getDistance());
+        visualViewport.setDistance(viewport.getDistance() / static_cast<double>(overscanFactor));
 
         isTransforming = true;
     }
@@ -334,9 +362,9 @@ void RendererSFML::handleMouseRelease(int x, int y) {
         isInteracting = false;
 
         // The visual viewport has been updated by the sequence of pans.
-        // Now we commit this state to the main viewport.
+        // Now we commit this state to the main viewport (convert visible -> texture distance).
         viewport.setCenter(visualViewport.getCenterReal(), visualViewport.getCenterImag());
-        viewport.setDistance(visualViewport.getDistance());
+        viewport.setDistance(visualViewport.getDistance() * static_cast<double>(overscanFactor));
         
         if (onParamsChanged) {
             onParamsChanged(viewport.getCenterReal(), viewport.getCenterImag(), viewport.getDistance(), maxIterations);
@@ -354,19 +382,13 @@ void RendererSFML::handleMouseMove(int x, int y) {
         sprite.setPosition(startSpritePos.x + deltaX, startSpritePos.y + deltaY);
 
         // We still need to update the visual viewport for the final commit.
-        // This tracks the total pan distance in the complex plane.
+        // This tracks the total pan distance in the complex plane with subpixel precision.
         int frameDeltaX = x - lastMousePos.x;
         int frameDeltaY = y - lastMousePos.y;
 
-        // Because the texture is larger than the window by overscanFactor,
-        // each window-pixel drag corresponds to 1/overscanFactor texture pixels
-        // in the complex plane.
-        double scaledDeltaX = static_cast<double>(frameDeltaX) / overscanFactor;
-        double scaledDeltaY = static_cast<double>(frameDeltaY) / overscanFactor;
-
-        // pan() expects integer deltas in pixel space. Round for stability.
-        visualViewport.pan(static_cast<int>(std::round(scaledDeltaX)),
-                           static_cast<int>(std::round(scaledDeltaY)));
+        // Visual viewport operates in window units with visible complex height:
+        // no overscan scaling needed.
+        visualViewport.panPrecise(static_cast<double>(frameDeltaX), static_cast<double>(frameDeltaY));
         lastMousePos = sf::Vector2i(x, y);
     }
 }
@@ -379,8 +401,46 @@ void RendererSFML::handleMouseWheel(int delta) {
     // Calculate zoom factor
     double zoomFactor = delta > 0 ? 0.9 : 1.1;
     
+    // Debug invariants before applying zoom
+    auto preComplex = visualViewport.screenToComplex(mousePos.x, mousePos.y);
+    std::cout << "[DEBUG][Zoom] Mouse (" << mousePos.x << ", " << mousePos.y << ")"
+              << " preComplex=(" << preComplex.first << ", " << preComplex.second << ")"
+              << " visualDist=" << visualViewport.getDistance()
+              << " textureDist=" << viewport.getDistance()
+              << " overscan=" << overscanFactor
+              << std::endl;
+
     // Use viewport's zoom method
     visualViewport.zoomAt(mousePos.x, mousePos.y, zoomFactor);
+
+    // Reproject the same complex back to screen in the updated visual viewport
+    auto postPxVisual = visualViewport.complexToScreenPrecise(preComplex.first, preComplex.second);
+    double errVisualX = postPxVisual.first - static_cast<double>(mousePos.x);
+    double errVisualY = postPxVisual.second - static_cast<double>(mousePos.y);
+    std::cout << "[DEBUG][Zoom] Visual reprojection after zoom: screen=("
+              << postPxVisual.first << ", " << postPxVisual.second << ")"
+              << " error=(" << errVisualX << ", " << errVisualY << ")"
+              << " newVisualDist=" << visualViewport.getDistance()
+              << std::endl;
+
+    // Predict on-screen position using the sprite mapping we actually apply
+    // Use distances in the same unit system (visible complex height)
+    double committedVisibleDist = viewport.getDistance() / static_cast<double>(overscanFactor);
+    double scale = committedVisibleDist / visualViewport.getDistance();
+    auto visualCenter = std::make_pair(visualViewport.getCenterReal(), visualViewport.getCenterImag());
+    auto pixelOfVisualCenterPrecise = viewport.complexToScreenPrecise(visualCenter.first, visualCenter.second);
+    float targetX = visualViewport.getWidth() / 2.0f;
+    float targetY = visualViewport.getHeight() / 2.0f;
+    float offsetX = targetX - (static_cast<float>(pixelOfVisualCenterPrecise.first) * static_cast<float>(scale));
+    float offsetY = targetY - (static_cast<float>(pixelOfVisualCenterPrecise.second) * static_cast<float>(scale));
+    auto anchorTexPx = viewport.complexToScreenPrecise(preComplex.first, preComplex.second);
+    float predictedScreenX = offsetX + static_cast<float>(anchorTexPx.first) * static_cast<float>(scale);
+    float predictedScreenY = offsetY + static_cast<float>(anchorTexPx.second) * static_cast<float>(scale);
+    double errSpriteX = static_cast<double>(predictedScreenX) - static_cast<double>(mousePos.x);
+    double errSpriteY = static_cast<double>(predictedScreenY) - static_cast<double>(mousePos.y);
+    std::cout << "[DEBUG][Zoom] Sprite mapping predicted screen=(" << predictedScreenX << ", " << predictedScreenY
+              << ") error=(" << errSpriteX << ", " << errSpriteY << ") scale=" << scale
+              << std::endl;
     applyVisualTransformation();
 }
 
@@ -388,13 +448,15 @@ void RendererSFML::applyVisualTransformation() {
     // The goal is to transform the sprite (which represents the `viewport`)
     // so that it visually matches the state of `visualViewport`.
 
-    // 1. Calculate the scale factor. This is purely the ratio of the "zoom levels" (distance).
-    double scale = viewport.getDistance() / visualViewport.getDistance();
+    // 1. Calculate the scale factor using visible complex heights (same unit system)
+    double committedVisibleDist = viewport.getDistance() / static_cast<double>(overscanFactor);
+    double scale = committedVisibleDist / visualViewport.getDistance();
 
     // 2. The anchor for the transformation is the center of the target view.
     //    Find where the center of the `visualViewport` is located in the texture's pixel coords.
     std::pair<double, double> visualCenter = {visualViewport.getCenterReal(), visualViewport.getCenterImag()};
-    std::pair<int, int> pixelOfVisualCenter = viewport.complexToScreen(visualCenter.first, visualCenter.second);
+    // Use precise (subpixel) mapping to avoid rounding drift during interaction
+    std::pair<double, double> pixelOfVisualCenterPrecise = viewport.complexToScreenPrecise(visualCenter.first, visualCenter.second);
 
     // 3. The target on-screen position for this anchor point is the center of the window.
     float targetX = visualViewport.getWidth() / 2.0f;
@@ -404,11 +466,11 @@ void RendererSFML::applyVisualTransformation() {
     //    ends up at `(targetX, targetY)`.
     //    The screen position of a texture point `p` is `spritePos + p * scale`.
     //    So, we solve for the sprite's position: `spritePos = target - pixelOfVisualCenter * scale`.
-    float offsetX = targetX - (static_cast<float>(pixelOfVisualCenter.first) * scale);
-    float offsetY = targetY - (static_cast<float>(pixelOfVisualCenter.second) * scale);
+    float offsetX = targetX - (static_cast<float>(pixelOfVisualCenterPrecise.first) * static_cast<float>(scale));
+    float offsetY = targetY - (static_cast<float>(pixelOfVisualCenterPrecise.second) * static_cast<float>(scale));
 
     sprite.setPosition(offsetX, offsetY);
-    sprite.setScale(scale, scale);
+    sprite.setScale(static_cast<float>(scale), static_cast<float>(scale));
 }
 
 void RendererSFML::commitZoom() {
@@ -417,7 +479,8 @@ void RendererSFML::commitZoom() {
         
         // Commit visual parameters to actual parameters
         viewport.setCenter(visualViewport.getCenterReal(), visualViewport.getCenterImag());
-        viewport.setDistance(visualViewport.getDistance());
+        // Convert visible complex height back to texture complex height
+        viewport.setDistance(visualViewport.getDistance() * static_cast<double>(overscanFactor));
         
         if (onParamsChanged) {
             onParamsChanged(viewport.getCenterReal(), viewport.getCenterImag(), viewport.getDistance(), maxIterations);
