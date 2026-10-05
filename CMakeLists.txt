@@ -22,7 +22,7 @@ set(SOURCES
 add_executable(mandelbrot_cuda ${SOURCES})
 
 # Set CUDA paths manually (avoiding find_package issues)
-set(CUDA_ROOT "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9")
+set(CUDA_ROOT "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3")
 set(CUDA_INCLUDE_DIRS "${CUDA_ROOT}/include")
 set(CUDA_LIBRARIES "${CUDA_ROOT}/lib/x64/cuda.lib;${CUDA_ROOT}/lib/x64/cudart.lib")
 
