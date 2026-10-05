@@ -78,7 +78,7 @@ set(CUDA_OBJ "${CMAKE_CURRENT_BINARY_DIR}/mandelbrot_cuda.obj")
 
 add_custom_command(
     OUTPUT ${CUDA_OBJ}
-    COMMAND nvcc -c ${CUDA_FILE} -o ${CUDA_OBJ} -I${CUDA_INCLUDE_DIRS} -O3 -arch=sm_50 -Xcompiler "/MT"
+    COMMAND nvcc -c ${CUDA_FILE} -o ${CUDA_OBJ} -I${CUDA_INCLUDE_DIRS} -O3 -arch=sm_75 -Xcompiler "/MT"
     DEPENDS ${CUDA_FILE}
     COMMENT "Compiling CUDA kernel"
 )
