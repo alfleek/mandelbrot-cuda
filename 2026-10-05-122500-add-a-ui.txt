@@ -1,0 +1,719 @@
+ ▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Opus 4.6 · API Usage Billing
+ ▝▝   ▝▝   /…/lewis/DataAnnotation/AgenticToolQualification/mandelbrot-cuda
+
+
+❯ Add a UI                                                                      
+
+● Let me look at what's in the project first.
+
+  Read 4 files, listed 2 directories (ctrl+o to expand)
+
+● Now I understand the project. It's a Mandelbrot set viewer with SFML
+  rendering, but the drawUI() only updates the window title — there's no
+  on-screen UI. I'll add an overlay UI with an info panel, preset buttons, a
+  help panel, and keyboard shortcuts.
+
+  Read 2 files (ctrl+o to expand)
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+● I have a good understanding of the codebase already from reading the files.
+  The project is a Mandelbrot CUDA viewer using SFML where drawUI() currently
+  only sets the window title — no on-screen UI elements exist.
+
+  Let me write the plan directly since I've already explored all the relevant
+  files.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/mighty-napping-waffle.md · /plan to edit
+     Add On-Screen UI to Mandelbrot Viewer
+
+     Context
+
+     The Mandelbrot SFML viewer currently has no on-screen UI — drawUI() only
+     updates the window title bar. Users have no visual guidance on controls, no
+     way to see coordinates without reading the title bar, and no clickable
+     preset buttons. This change adds overlay panels for information display,
+     preset selection, and help.
+
+     Plan
+
+     1. Add UI state and font to renderer_sfml.h
+
+     - Add sf::Font uiFont member and bool fontLoaded flag
+     - Add UI state: bool showHelp, bool showInfo (both default true)
+     - Add preset data structure and storage: struct PresetInfo { string name; 
+       double real, imag, dist; int maxIter; }
+     - Add preset selection callback: std::function<void(int)> onPresetSelected
+     - Add setPresets() and setPresetSelectedCallback() methods
+     - Add std::string computeMode and double lastComputeTimeMs for display
+     - Add setComputeInfo(const std::string& mode, double timeMs) method
+
+     2. Implement UI drawing in renderer_sfml.cpp
+
+     - Load font in init() — try C:/Windows/Fonts/consola.ttf then
+       C:/Windows/Fonts/arial.ttf then C:/Windows/Fonts/segoeui.ttf
+     - Implement drawUI() with three panels:
+       - Info panel (top-left, semi-transparent dark bg): center coordinates,
+         zoom level, max iterations, compute mode, last compute time
+       - Preset panel (top-right, semi-transparent dark bg): list of preset
+         names as clickable buttons, highlight on hover
+       - Help bar (bottom, semi-transparent dark bg): one-line control summary
+         (drag=pan, scroll=zoom, 1-6=presets, H=help, I=info, Esc=quit)
+     - All panels drawn with sf::RectangleShape backgrounds and sf::Text
+
+     3. Add keyboard and click handling in renderer_sfml.cpp
+
+     - In handleEvents(), add key handlers:
+       - H toggles help bar visibility
+       - I toggles info panel visibility
+       - 1-6 (or however many presets) selects a preset via callback
+       - R resets to full set (preset 1)
+     - Add click detection on preset buttons in handleMousePress() — check if
+       click is within preset button bounds before starting a drag
+
+     4. Wire up in main.cpp
+
+     - After renderer.init(), call renderer.setPresets(presets) to pass preset
+       data
+     - Set preset callback: renderer.setPresetSelectedCallback([this](int idx) {
+       selectPreset(idx); })
+     - After each compute(), call renderer.setComputeInfo(useGPU ? "GPU (CUDA)" 
+       : "CPU", durationMs)
+
+     Files to modify
+
+     - renderer_sfml.h — new members, methods, struct
+     - renderer_sfml.cpp — font loading, UI drawing, event handling
+     - main.cpp — wire presets and compute info to renderer
+
+     Verification
+
+     - Build with build.ps1
+     - Run the app and visually confirm:
+       - Info panel appears top-left with coordinates and zoom
+       - Preset buttons appear top-right, clicking one navigates there
+       - Help bar at bottom shows controls
+       - H/I keys toggle panels
+       - Number keys select presets
+       - Panels don't interfere with pan/zoom interaction
+
+● Starting implementation. I'll modify all three files.
+
+● Update(renderer_sfml.h)
+  ⎿  Added 47 lines, removed 19 lines
+       3  #include <SFML/Graphics.hpp>
+       4  #include <functional>
+       5  #include <vector>
+       6 +#include <string>                                              
+       7  #include <chrono>
+       8  #include "Viewport.h"
+       9  
+      10 +struct PresetInfo {                                            
+      11 +    std::string name;                                          
+      12 +    double realCenter;                                         
+      13 +    double imagCenter;                                         
+      14 +    double distance;                                           
+      15 +    int maxIterations;                                         
+      16 +};                                                             
+      17 +                                                               
+      18  class RendererSFML {
+      19  private:
+      20      sf::RenderWindow window;
+      21      sf::Texture texture;
+      22      sf::Sprite sprite;
+      14 -                                                               
+      23 +                                                               
+      24      // Note: windowWidth/Height now refer to the texture size
+      25      int textureWidth;
+      26      int textureHeight;
+     ...
+       28  
+       29      // Overscan factor to maintain constant texture/window rat
+           io
+       30      float overscanFactor;
+       22 -                                                              
+       31 +                                                              
+       32      // Mandelbrot parameters
+       33      int maxIterations;
+       25 -                                                              
+       34 +                                                              
+       35      // Color palette
+       36      std::vector<sf::Color> colorPalette;
+       28 -                                                              
+       37 +                                                              
+       38      // Viewport for coordinate mapping
+       39      Viewport viewport;
+       31 -                                                              
+       40 +                                                              
+       41      // Mouse interaction
+       42      bool isDragging;
+       43      bool isInteracting;
+       44      sf::Vector2i lastMousePos;
+       45      sf::Vector2i startMousePos; // For stable panning
+       46      sf::Vector2f startSpritePos; // For stable panning
+       38 -                                                              
+       47 +                                                              
+       48      // Visual transformation for immediate feedback
+       49      Viewport visualViewport; // For immediate feedback during 
+           interaction
+       50      bool isTransforming;
+       42 -                                                              
+       51 +                                                              
+       52      // Timer for zoom commit
+       53      std::chrono::steady_clock::time_point lastZoomTime;
+       54      static constexpr int ZOOM_COMMIT_TIMEOUT_MS = 200;
+       46 -                                                              
+       55 +                                                              
+       56      // Callback for parameter changes
+       57      std::function<void(double, double, double, int)> onParamsC
+           hanged;
+       49 -                                                              
+       58 +                                                              
+       59      // Callback for window resize events
+       60      std::function<void(int, int)> onWindowResize;
+       52 -                                                              
+       61 +                                                              
+       62 +    // UI state                                               
+       63 +    sf::Font uiFont;                                          
+       64 +    bool fontLoaded;                                          
+       65 +    bool showInfo;                                            
+       66 +    bool showHelp;                                            
+       67 +    bool showPresets;                                         
+       68 +    std::vector<PresetInfo> presets;                          
+       69 +    std::vector<sf::FloatRect> presetButtonBounds;            
+       70 +    int hoveredPreset;                                        
+       71 +    std::function<void(int)> onPresetSelected;                
+       72 +    std::string computeMode;                                  
+       73 +    double lastComputeTimeMs;                                 
+       74 +                                                              
+       75      void setupColorPalette();
+       76      sf::Color getColor(int iteration) const;
+       77      void applyVisualTransformation();
+       78 +    void drawInfoPanel();                                     
+       79 +    void drawPresetPanel();                                   
+       80 +    void drawHelpBar();                                       
+       81  
+       82  public:
+       83      RendererSFML();
+       84      ~RendererSFML();
+       60 -                                                              
+       85 +                                                              
+       86      bool init(int textureWidth, int textureHeight, int windowW
+           idth, int windowHeight, const std::string& title = "Mandelbrot
+            Set");
+       87      void close();
+       63 -                                                              
+       88 +                                                              
+       89      void updateMandelbrotData(const std::vector<int>& data);
+       90      void updateMandelbrotData(const int* data, int size);
+       66 -                                                              
+       91 +                                                              
+       92      void setMandelbrotParams(double realCenter, double imagCen
+           ter, double distance, int maxIterations);
+       93      void setParamsChangedCallback(std::function<void(double, d
+           ouble, double, int)> callback);
+       94      void setWindowResizeCallback(std::function<void(int, int)>
+            callback);
+       70 -                                                              
+       95 +    void setPresetSelectedCallback(std::function<void(int)> ca
+          +llback);                                                      
+       96 +    void setPresets(const std::vector<PresetInfo>& presetList)
+          +;                                                             
+       97 +    void setComputeInfo(const std::string& mode, double timeMs
+          +);                                                            
+       98 +                                                              
+       99      void update();
+      100      void updateTexture();
+      101      void render();
+      102      void drawUI();
+      103      void handleEvents();
+       76 -                                                              
+      104 +                                                              
+      105      bool isOpen() const;
+       78 -                                                              
+      106 +                                                              
+      107      // Window resize handling
+      108      void handleWindowResize(int newWidth, int newHeight);
+       81 -                                                              
+      109 +                                                              
+      110      // Mouse event handlers
+      111      void handleMousePress(int x, int y, bool leftButton);
+      112      void handleMouseRelease(int x, int y);
+      113      void handleMouseMove(int x, int y);
+      114      void handleMouseWheel(int delta);
+       87 -                                                              
+      115 +                                                              
+      116      // Zoom commit method
+      117      void commitZoom();
+       90 -                                                              
+      118 +                                                              
+      119      // Get current viewport for external use
+      120      const Viewport& getViewport() const { return viewport; }
+      121  
+
+● Now the renderer implementation — I'll update the constructor, init(),
+  drawUI(), and handleEvents().
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 6 lines, removed 4 lines
+       7  #define M_PI 3.14159265358979323846
+       8  #endif
+       9  
+      10 -RendererSFML::RendererSFML()                                   
+      10 +RendererSFML::RendererSFML()                                   
+      11      : textureWidth(1600), textureHeight(900), dataUpdated(false
+          ),
+      12        maxIterations(1000), overscanFactor(1.4f),
+      13 -      // viewport represents the entire texture, visualViewport
+         - represents the window                                         
+      13        viewport(0.0, 0.0, 4.0, 1600, 900),
+      15 -      visualViewport(0.0, 0.0, 4.0, 1600, 900), // Will be upda
+         -ted in init                                                    
+      14 +      visualViewport(0.0, 0.0, 4.0, 1600, 900),                
+      15        isDragging(false), isInteracting(false), lastMousePos(0, 
+          0),
+      16        isTransforming(false), lastZoomTime(std::chrono::steady_c
+          lock::now()),
+      18 -      onParamsChanged(nullptr), onWindowResize(nullptr) {      
+      17 +      onParamsChanged(nullptr), onWindowResize(nullptr),       
+      18 +      fontLoaded(false), showInfo(true), showHelp(true), showPr
+         +esets(true),                                                   
+      19 +      hoveredPreset(-1), onPresetSelected(nullptr),            
+      20 +      computeMode("CPU"), lastComputeTimeMs(0.0) {             
+      21      setupColorPalette();
+      22  }
+      23  
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 19 lines, removed 1 line
+      43      }
+      44      
+      45      sprite.setTexture(texture);
+      46 -                                                               
+      46 +                                                               
+      47 +    // Load font for UI text                                   
+      48 +    const char* fontPaths[] = {                                
+      49 +        "C:/Windows/Fonts/consola.ttf",                        
+      50 +        "C:/Windows/Fonts/arial.ttf",                          
+      51 +        "C:/Windows/Fonts/segoeui.ttf",                        
+      52 +        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 
+      53 +        "/usr/share/fonts/truetype/liberation/LiberationMono-Re
+         +gular.ttf",                                                    
+      54 +    };                                                         
+      55 +    for (const char* path : fontPaths) {                       
+      56 +        if (uiFont.loadFromFile(path)) {                       
+      57 +            fontLoaded = true;                                 
+      58 +            break;                                             
+      59 +        }                                                      
+      60 +    }                                                          
+      61 +    if (!fontLoaded) {                                         
+      62 +        std::cerr << "Warning: Could not load any font for UI t
+         +ext" << std::endl;                                             
+      63 +    }                                                          
+      64 +                                                               
+      65      // viewport represents the entire texture
+      66      viewport.updateWindowSize(textureWidth, textureHeight);
+      67      // visualViewport represents the visible window area
+
+● Now replace the drawUI() method and add the three panel drawing methods plus
+  the new public methods.
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 144 lines, removed 6 lines
+      251      window.display();
+      252  }
+      253  
+      254 +void RendererSFML::setPresetSelectedCallback(std::function<voi
+          +d(int)> callback) {                                           
+      255 +    onPresetSelected = callback;                              
+      256 +}                                                             
+      257 +                                                              
+      258 +void RendererSFML::setPresets(const std::vector<PresetInfo>& p
+          +resetList) {                                                  
+      259 +    presets = presetList;                                     
+      260 +}                                                             
+      261 +                                                              
+      262 +void RendererSFML::setComputeInfo(const std::string& mode, dou
+          +ble timeMs) {                                                 
+      263 +    computeMode = mode;                                       
+      264 +    lastComputeTimeMs = timeMs;                               
+      265 +}                                                             
+      266 +                                                              
+      267  void RendererSFML::drawUI() {
+      255 -    // Simple text overlay with parameters                    
+      256 -    std::string title = "Mandelbrot Set - Center: (" +        
+      257 -                       std::to_string(viewport.getCenterReal()
+          -).substr(0, 8) + ", " +                                       
+      258 -                       std::to_string(viewport.getCenterImag()
+          -).substr(0, 8) + ") Zoom: " +                                 
+      259 -                       std::to_string(1.0 / viewport.getDistan
+          -ce()).substr(0, 8);                                           
+      260 -    window.setTitle(title);                                   
+      268 +    if (!fontLoaded) return;                                  
+      269 +                                                              
+      270 +    window.setTitle("Mandelbrot Set");                        
+      271 +                                                              
+      272 +    if (showInfo) drawInfoPanel();                            
+      273 +    if (showPresets) drawPresetPanel();                       
+      274 +    if (showHelp) drawHelpBar();                              
+      275  }
+      276  
+      277 +void RendererSFML::drawInfoPanel() {                          
+      278 +    const float padding = 10.0f;                              
+      279 +    const float lineHeight = 18.0f;                           
+      280 +    const unsigned int fontSize = 13;                         
+      281 +                                                              
+      282 +    // Prepare text lines                                     
+      283 +    char buf[256];                                            
+      284 +    std::vector<std::string> lines;                           
+      285 +                                                              
+      286 +    snprintf(buf, sizeof(buf), "Center: (%.12f, %.12f)", viewp
+          +ort.getCenterReal(), viewport.getCenterImag());               
+      287 +    lines.push_back(buf);                                     
+      288 +                                                              
+      289 +    double zoom = 1.0 / viewport.getDistance();               
+      290 +    if (zoom >= 1e6) snprintf(buf, sizeof(buf), "Zoom: %.3e", 
+          +zoom);                                                        
+      291 +    else snprintf(buf, sizeof(buf), "Zoom: %.1f", zoom);      
+      292 +    lines.push_back(buf);                                     
+      293 +                                                              
+      294 +    snprintf(buf, sizeof(buf), "Iterations: %d", maxIterations
+          +);                                                            
+      295 +    lines.push_back(buf);                                     
+      296 +                                                              
+      297 +    snprintf(buf, sizeof(buf), "Mode: %s", computeMode.c_str()
+          +);                                                            
+      298 +    lines.push_back(buf);                                     
+      299 +                                                              
+      300 +    snprintf(buf, sizeof(buf), "Compute: %.1f ms", lastCompute
+          +TimeMs);                                                      
+      301 +    lines.push_back(buf);                                     
+      302 +                                                              
+      303 +    float panelWidth = 320.0f;                                
+      304 +    float panelHeight = padding * 2 + lineHeight * lines.size(
+          +);                                                            
+      305 +                                                              
+      306 +    sf::RectangleShape bg(sf::Vector2f(panelWidth, panelHeight
+          +));                                                           
+      307 +    bg.setPosition(10.0f, 10.0f);                             
+      308 +    bg.setFillColor(sf::Color(0, 0, 0, 180));                 
+      309 +    bg.setOutlineColor(sf::Color(255, 255, 255, 60));         
+      310 +    bg.setOutlineThickness(1.0f);                             
+      311 +    window.draw(bg);                                          
+      312 +                                                              
+      313 +    for (size_t i = 0; i < lines.size(); i++) {               
+      314 +        sf::Text text(lines[i], uiFont, fontSize);            
+      315 +        text.setFillColor(sf::Color(220, 220, 220));          
+      316 +        text.setPosition(10.0f + padding, 10.0f + padding + i 
+          +* lineHeight);                                                
+      317 +        window.draw(text);                                    
+      318 +    }                                                         
+      319 +}                                                             
+      320 +                                                              
+      321 +void RendererSFML::drawPresetPanel() {                        
+      322 +    if (presets.empty()) return;                              
+      323 +                                                              
+      324 +    const float padding = 10.0f;                              
+      325 +    const float buttonHeight = 28.0f;                         
+      326 +    const float buttonSpacing = 4.0f;                         
+      327 +    const float panelWidth = 180.0f;                          
+      328 +    const unsigned int fontSize = 13;                         
+      329 +                                                              
+      330 +    sf::Vector2u winSize = window.getSize();                  
+      331 +    float panelHeight = padding * 2 + 20.0f + (buttonHeight + 
+          +buttonSpacing) * presets.size();                              
+      332 +    float panelX = winSize.x - panelWidth - 10.0f;            
+      333 +    float panelY = 10.0f;                                     
+      334 +                                                              
+      335 +    sf::RectangleShape bg(sf::Vector2f(panelWidth, panelHeight
+          +));                                                           
+      336 +    bg.setPosition(panelX, panelY);                           
+      337 +    bg.setFillColor(sf::Color(0, 0, 0, 180));                 
+      338 +    bg.setOutlineColor(sf::Color(255, 255, 255, 60));         
+      339 +    bg.setOutlineThickness(1.0f);                             
+      340 +    window.draw(bg);                                          
+      341 +                                                              
+      342 +    sf::Text title("Presets", uiFont, 14);                    
+      343 +    title.setFillColor(sf::Color(255, 255, 255));             
+      344 +    title.setStyle(sf::Text::Bold);                           
+      345 +    title.setPosition(panelX + padding, panelY + padding);    
+      346 +    window.draw(title);                                       
+      347 +                                                              
+      348 +    presetButtonBounds.resize(presets.size());                
+      349 +                                                              
+      350 +    for (size_t i = 0; i < presets.size(); i++) {             
+      351 +        float btnX = panelX + padding;                        
+      352 +        float btnY = panelY + padding + 22.0f + i * (buttonHei
+          +ght + buttonSpacing);                                         
+      353 +        float btnW = panelWidth - padding * 2;                
+      354 +                                                              
+      355 +        presetButtonBounds[i] = sf::FloatRect(btnX, btnY, btnW
+          +, buttonHeight);                                              
+      356 +                                                              
+      357 +        sf::RectangleShape btn(sf::Vector2f(btnW, buttonHeight
+          +));                                                           
+      358 +        btn.setPosition(btnX, btnY);                          
+      359 +                                                              
+      360 +        if (static_cast<int>(i) == hoveredPreset) {           
+      361 +            btn.setFillColor(sf::Color(80, 120, 200, 200));   
+      362 +        } else {                                              
+      363 +            btn.setFillColor(sf::Color(60, 60, 60, 180));     
+      364 +        }                                                     
+      365 +        btn.setOutlineColor(sf::Color(255, 255, 255, 40));    
+      366 +        btn.setOutlineThickness(1.0f);                        
+      367 +        window.draw(btn);                                     
+      368 +                                                              
+      369 +        char label[64];                                       
+      370 +        snprintf(label, sizeof(label), "%zu. %s", i + 1, prese
+          +ts[i].name.c_str());                                          
+      371 +        sf::Text btnText(label, uiFont, fontSize);            
+      372 +        btnText.setFillColor(sf::Color(220, 220, 220));       
+      373 +        btnText.setPosition(btnX + 8.0f, btnY + 5.0f);        
+      374 +        window.draw(btnText);                                 
+      375 +    }                                                         
+      376 +}                                                             
+      377 +                                                              
+      378 +void RendererSFML::drawHelpBar() {                            
+      379 +    const unsigned int fontSize = 12;                         
+      380 +    sf::Vector2u winSize = window.getSize();                  
+      381 +                                                              
+      382 +    std::string helpStr = "Drag: Pan | Scroll: Zoom | 1-" + st
+          +d::to_string(presets.size()) +                                
+      383 +                          ": Presets | H: Help | I: Info | P: 
+          +Presets | R: Reset | Esc: Quit";                              
+      384 +                                                              
+      385 +    sf::Text text(helpStr, uiFont, fontSize);                 
+      386 +    sf::FloatRect textBounds = text.getLocalBounds();         
+      387 +                                                              
+      388 +    float barHeight = 28.0f;                                  
+      389 +    float barY = winSize.y - barHeight;                       
+      390 +                                                              
+      391 +    sf::RectangleShape bg(sf::Vector2f(static_cast<float>(winS
+          +ize.x), barHeight));                                          
+      392 +    bg.setPosition(0.0f, barY);                               
+      393 +    bg.setFillColor(sf::Color(0, 0, 0, 180));                 
+      394 +    window.draw(bg);                                          
+      395 +                                                              
+      396 +    text.setFillColor(sf::Color(180, 180, 180));              
+      397 +    text.setPosition((winSize.x - textBounds.width) / 2.0f, ba
+          +rY + (barHeight - textBounds.height) / 2.0f - 2.0f);          
+      398 +    window.draw(text);                                        
+      399 +}                                                             
+      400 +                                                              
+      401  void RendererSFML::handleEvents() {
+      402      sf::Event event;
+      403      while (window.pollEvent(event)) {
+
+● Now add keyboard handling and preset click detection in handleEvents() and
+  handleMousePress().
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 12 lines
+      433              case sf::Event::KeyPressed:
+      434                  if (event.key.code == sf::Keyboard::Escape) {
+      435                      window.close();
+      436 +                } else if (event.key.code == sf::Keyboard::H) 
+          +{                                                             
+      437 +                    showHelp = !showHelp;                     
+      438 +                } else if (event.key.code == sf::Keyboard::I) 
+          +{                                                             
+      439 +                    showInfo = !showInfo;                     
+      440 +                } else if (event.key.code == sf::Keyboard::P) 
+          +{                                                             
+      441 +                    showPresets = !showPresets;               
+      442 +                } else if (event.key.code == sf::Keyboard::R) 
+          +{                                                             
+      443 +                    if (onPresetSelected && !presets.empty()) 
+          +onPresetSelected(1);                                          
+      444 +                } else if (event.key.code >= sf::Keyboard::Num
+          +1 && event.key.code <= sf::Keyboard::Num9) {                  
+      445 +                    int idx = event.key.code - sf::Keyboard::N
+          +um1 + 1;                                                      
+      446 +                    if (onPresetSelected && idx >= 1 && idx <=
+          + static_cast<int>(presets.size()))                            
+      447 +                        onPresetSelected(idx);                
+      448                  }
+      449                  break;
+      450          }
+
+● Now add preset button click detection and hover tracking. I'll modify
+  handleMousePress to check preset buttons first, and handleMouseMove to track
+  hover state.
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 9 lines
+      510  
+      511  void RendererSFML::handleMousePress(int x, int y, bool leftBut
+           ton) {
+      512      if (leftButton) {
+      513 +        // Check if clicking on a preset button               
+      514 +        if (showPresets) {                                    
+      515 +            for (size_t i = 0; i < presetButtonBounds.size(); 
+          +i++) {                                                        
+      516 +                if (presetButtonBounds[i].contains(static_cast
+          +<float>(x), static_cast<float>(y))) {                         
+      517 +                    if (onPresetSelected) onPresetSelected(sta
+          +tic_cast<int>(i) + 1);                                        
+      518 +                    return;                                   
+      519 +                }                                             
+      520 +            }                                                 
+      521 +        }                                                     
+      522          isDragging = true;
+      523          isInteracting = true;
+      524          // Store the starting positions for the drag operation
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 11 lines
+      552  }
+      553  
+      554  void RendererSFML::handleMouseMove(int x, int y) {
+      555 +    // Update preset hover state                              
+      556 +    hoveredPreset = -1;                                       
+      557 +    if (showPresets) {                                        
+      558 +        for (size_t i = 0; i < presetButtonBounds.size(); i++)
+          + {                                                            
+      559 +            if (presetButtonBounds[i].contains(static_cast<flo
+          +at>(x), static_cast<float>(y))) {                             
+      560 +                hoveredPreset = static_cast<int>(i);          
+      561 +                break;                                        
+      562 +            }                                                 
+      563 +        }                                                     
+      564 +    }                                                         
+      565 +                                                              
+      566      if (isDragging) {
+      567          // For panning, we calculate the new sprite position d
+           irectly
+      568          // relative to the start of the drag for a stable 1:1 
+           mapping.
+
+● Now wire it up in main.cpp. I need to pass presets and compute info to the
+  renderer.
+
+● Update(main.cpp)
+  ⎿  Added 14 lines, removed 2 lines
+      106          renderer.setParamsChangedCallback([this](double real, 
+           double imag, double dist, int maxIter) {
+      107              this->handleParamsChanged(real, imag, dist, maxIte
+           r);
+      108          });
+      109 -                                                              
+      109 +                                                              
+      110          // Set up callback for window resize events
+      111          renderer.setWindowResizeCallback([this](int newWidth, 
+           int newHeight) {
+      112              this->handleWindowResize(newWidth, newHeight);
+      113          });
+      114 -                                                              
+      114 +                                                              
+      115 +        // Pass preset info to the renderer UI                
+      116 +        std::vector<PresetInfo> presetInfos;                  
+      117 +        for (const auto& p : presets) {                       
+      118 +            presetInfos.push_back({p.name, p.realCenter, p.ima
+          +gCenter, p.distance, p.maxIterations});                       
+      119 +        }                                                     
+      120 +        renderer.setPresets(presetInfos);                     
+      121 +                                                              
+      122 +        // Set up callback for preset selection from UI       
+      123 +        renderer.setPresetSelectedCallback([this](int idx) {  
+      124 +            this->selectPreset(idx);                          
+      125 +        });                                                   
+      126 +                                                              
+      127          // Set initial parameters to the first preset
+      128          const Preset& initialPreset = presets[0];
+      129          setParameters(initialPreset.realCenter, initialPreset.
+           imagCenter, initialPreset.distance, initialPreset.maxIteration
+           s);
+
+● Now update the compute() method to report timing and mode to the renderer.
+
+● Update(main.cpp)
+  ⎿  Added 5 lines, removed 3 lines
+      163          auto endTime = std::chrono::high_resolution_clock::now
+           ();
+      164          auto duration = std::chrono::duration_cast<std::chrono
+           ::microseconds>(endTime - startTime);
+      165          
+      166 -        std::cout << "Computation time: " << duration.count() 
+          -/ 1000.0 << " ms" << std::endl;                               
+      167 -                                                              
+      168 -        // Update renderer with results                       
+      166 +        double ms = duration.count() / 1000.0;                
+      167 +        std::cout << "Computation time: " << ms << " ms" << st
+          +d::endl;                                                      
+      168 +                                                              
+      169 +        // Update renderer with results and compute info      
+      170 +        renderer.setComputeInfo(useGPU ? "GPU (CUDA)" : "CPU",
+          + ms);                                                         
+      171          renderer.updateMandelbrotData(results);
+      172      }
+      173      
+
+● Now let me verify the build compiles. Let me check if there's a way to build
+  from WSL.
+  Ran 1 shell command (ctrl+o to expand)
+
+● No cmake or SFML available in WSL — this is a Windows build project (uses
+  build.ps1 with MSVC). Let me do a syntax check by compiling just the changed
+  files to verify they parse correctly.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Expected — SFML headers aren't installed in WSL. Let me verify the code is
+  consistent by checking the main.cpp syntax independently.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Same — missing CUDA/SFML headers on WSL. The project is a Windows-only build.
+  Let me do a final review of the changes to make sure everything is correct.
+
+  Read 1 file (ctrl+o to expand)
+
+● I also need to add #include <cstdio> for snprintf.
+
+● Update(renderer_sfml.cpp)
+  ⎿  Added 1 line
+      1  #include "renderer_sfml.h"
+      2  #include <iostream>
+      3  #include <cmath>
+      4 +#include <cstdio>                                               
+      5  
+      6  // Define M_PI for Windows if not already defined
+      7  #ifndef M_PI
+
+● All three files are updated. Here's a summary of the changes:
+
+  renderer_sfml.h — Added PresetInfo struct, UI state members (font, panel
+  visibility toggles, preset button bounds, hover tracking, compute info), new
+  private draw methods (drawInfoPanel, drawPresetPanel, drawHelpBar), and new
+  public methods (setPresets, setPresetSelectedCallback, setComputeInfo).
+
+  renderer_sfml.cpp —
+  - Constructor initializes new UI state
+  - init() loads a font from common Windows/Linux paths
+  - drawUI() now renders three overlay panels:
+    - Info panel (top-left): center coordinates, zoom level, iterations, compute
+      mode, compute time
+    - Preset panel (top-right): clickable buttons for each preset with hover
+      highlighting
+    - Help bar (bottom): centered control reference text
+  - handleEvents() adds keyboard shortcuts: H/I/P toggle panels, R resets, 1-6
+    select presets
+  - handleMousePress() checks preset button clicks before starting a drag
+  - handleMouseMove() tracks hover state over preset buttons
+
+  main.cpp — Passes preset data to the renderer, wires the preset selection
+  callback, and reports compute mode/timing after each computation.
+
+  To build and test, run .\build.ps1 then .\build\Release\mandelbrot_cuda.exe
+  from PowerShell.
+
+✻ Cogitated for 3m 58s · done 12:19 PM
+
+❯ /export                                                                       
+  ⎿  Conversation copied to clipboard

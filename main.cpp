@@ -106,12 +106,25 @@ public:
         renderer.setParamsChangedCallback([this](double real, double imag, double dist, int maxIter) {
             this->handleParamsChanged(real, imag, dist, maxIter);
         });
-        
+
         // Set up callback for window resize events
         renderer.setWindowResizeCallback([this](int newWidth, int newHeight) {
             this->handleWindowResize(newWidth, newHeight);
         });
-        
+
+        // Pass preset info to the renderer UI
+        std::vector<PresetInfo> presetInfos;
+        for (const auto& p : presets) {
+            presetInfos.push_back({p.name, p.realCenter, p.imagCenter, p.distance, p.maxIterations});
+        }
+        renderer.setPresets(presetInfos);
+
+        // Set up callback for preset selection from UI
+        renderer.setPresetSelectedCallback([this](int idx) {
+            this->selectPreset(idx);
+            this->compute();
+        });
+
         // Set initial parameters to the first preset
         const Preset& initialPreset = presets[0];
         setParameters(initialPreset.realCenter, initialPreset.imagCenter, initialPreset.distance, initialPreset.maxIterations);
@@ -151,9 +164,11 @@ public:
         auto endTime = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
         
-        std::cout << "Computation time: " << duration.count() / 1000.0 << " ms" << std::endl;
-        
-        // Update renderer with results
+        double ms = duration.count() / 1000.0;
+        std::cout << "Computation time: " << ms << " ms" << std::endl;
+
+        // Update renderer with results and compute info
+        renderer.setComputeInfo(useGPU ? "GPU (CUDA)" : "CPU", ms);
         renderer.updateMandelbrotData(results);
     }
     

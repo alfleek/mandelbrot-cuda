@@ -1,21 +1,24 @@
 #include "renderer_sfml.h"
 #include <iostream>
 #include <cmath>
+#include <cstdio>
 
 // Define M_PI for Windows if not already defined
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-RendererSFML::RendererSFML() 
+RendererSFML::RendererSFML()
     : textureWidth(1600), textureHeight(900), dataUpdated(false),
       maxIterations(1000), overscanFactor(1.4f),
-      // viewport represents the entire texture, visualViewport represents the window
       viewport(0.0, 0.0, 4.0, 1600, 900),
-      visualViewport(0.0, 0.0, 4.0, 1600, 900), // Will be updated in init
+      visualViewport(0.0, 0.0, 4.0, 1600, 900),
       isDragging(false), isInteracting(false), lastMousePos(0, 0),
       isTransforming(false), lastZoomTime(std::chrono::steady_clock::now()),
-      onParamsChanged(nullptr), onWindowResize(nullptr) {
+      onParamsChanged(nullptr), onWindowResize(nullptr),
+      fontLoaded(false), showInfo(true), showHelp(true), showPresets(true),
+      hoveredPreset(-1), onPresetSelected(nullptr),
+      computeMode("CPU"), lastComputeTimeMs(0.0) {
     setupColorPalette();
 }
 
@@ -41,7 +44,25 @@ bool RendererSFML::init(int texWidth, int texHeight, int winWidth, int winHeight
     }
     
     sprite.setTexture(texture);
-    
+
+    // Load font for UI text
+    const char* fontPaths[] = {
+        "C:/Windows/Fonts/consola.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    };
+    for (const char* path : fontPaths) {
+        if (uiFont.loadFromFile(path)) {
+            fontLoaded = true;
+            break;
+        }
+    }
+    if (!fontLoaded) {
+        std::cerr << "Warning: Could not load any font for UI text" << std::endl;
+    }
+
     // viewport represents the entire texture
     viewport.updateWindowSize(textureWidth, textureHeight);
     // visualViewport represents the visible window area
@@ -231,13 +252,151 @@ void RendererSFML::render() {
     window.display();
 }
 
+void RendererSFML::setPresetSelectedCallback(std::function<void(int)> callback) {
+    onPresetSelected = callback;
+}
+
+void RendererSFML::setPresets(const std::vector<PresetInfo>& presetList) {
+    presets = presetList;
+}
+
+void RendererSFML::setComputeInfo(const std::string& mode, double timeMs) {
+    computeMode = mode;
+    lastComputeTimeMs = timeMs;
+}
+
 void RendererSFML::drawUI() {
-    // Simple text overlay with parameters
-    std::string title = "Mandelbrot Set - Center: (" + 
-                       std::to_string(viewport.getCenterReal()).substr(0, 8) + ", " + 
-                       std::to_string(viewport.getCenterImag()).substr(0, 8) + ") Zoom: " + 
-                       std::to_string(1.0 / viewport.getDistance()).substr(0, 8);
-    window.setTitle(title);
+    if (!fontLoaded) return;
+
+    window.setTitle("Mandelbrot Set");
+
+    if (showInfo) drawInfoPanel();
+    if (showPresets) drawPresetPanel();
+    if (showHelp) drawHelpBar();
+}
+
+void RendererSFML::drawInfoPanel() {
+    const float padding = 10.0f;
+    const float lineHeight = 18.0f;
+    const unsigned int fontSize = 13;
+
+    // Prepare text lines
+    char buf[256];
+    std::vector<std::string> lines;
+
+    snprintf(buf, sizeof(buf), "Center: (%.12f, %.12f)", viewport.getCenterReal(), viewport.getCenterImag());
+    lines.push_back(buf);
+
+    double zoom = 1.0 / viewport.getDistance();
+    if (zoom >= 1e6) snprintf(buf, sizeof(buf), "Zoom: %.3e", zoom);
+    else snprintf(buf, sizeof(buf), "Zoom: %.1f", zoom);
+    lines.push_back(buf);
+
+    snprintf(buf, sizeof(buf), "Iterations: %d", maxIterations);
+    lines.push_back(buf);
+
+    snprintf(buf, sizeof(buf), "Mode: %s", computeMode.c_str());
+    lines.push_back(buf);
+
+    snprintf(buf, sizeof(buf), "Compute: %.1f ms", lastComputeTimeMs);
+    lines.push_back(buf);
+
+    float panelWidth = 320.0f;
+    float panelHeight = padding * 2 + lineHeight * lines.size();
+
+    sf::RectangleShape bg(sf::Vector2f(panelWidth, panelHeight));
+    bg.setPosition(10.0f, 10.0f);
+    bg.setFillColor(sf::Color(0, 0, 0, 180));
+    bg.setOutlineColor(sf::Color(255, 255, 255, 60));
+    bg.setOutlineThickness(1.0f);
+    window.draw(bg);
+
+    for (size_t i = 0; i < lines.size(); i++) {
+        sf::Text text(lines[i], uiFont, fontSize);
+        text.setFillColor(sf::Color(220, 220, 220));
+        text.setPosition(10.0f + padding, 10.0f + padding + i * lineHeight);
+        window.draw(text);
+    }
+}
+
+void RendererSFML::drawPresetPanel() {
+    if (presets.empty()) return;
+
+    const float padding = 10.0f;
+    const float buttonHeight = 28.0f;
+    const float buttonSpacing = 4.0f;
+    const float panelWidth = 180.0f;
+    const unsigned int fontSize = 13;
+
+    sf::Vector2u winSize = window.getSize();
+    float panelHeight = padding * 2 + 20.0f + (buttonHeight + buttonSpacing) * presets.size();
+    float panelX = winSize.x - panelWidth - 10.0f;
+    float panelY = 10.0f;
+
+    sf::RectangleShape bg(sf::Vector2f(panelWidth, panelHeight));
+    bg.setPosition(panelX, panelY);
+    bg.setFillColor(sf::Color(0, 0, 0, 180));
+    bg.setOutlineColor(sf::Color(255, 255, 255, 60));
+    bg.setOutlineThickness(1.0f);
+    window.draw(bg);
+
+    sf::Text title("Presets", uiFont, 14);
+    title.setFillColor(sf::Color(255, 255, 255));
+    title.setStyle(sf::Text::Bold);
+    title.setPosition(panelX + padding, panelY + padding);
+    window.draw(title);
+
+    presetButtonBounds.resize(presets.size());
+
+    for (size_t i = 0; i < presets.size(); i++) {
+        float btnX = panelX + padding;
+        float btnY = panelY + padding + 22.0f + i * (buttonHeight + buttonSpacing);
+        float btnW = panelWidth - padding * 2;
+
+        presetButtonBounds[i] = sf::FloatRect(btnX, btnY, btnW, buttonHeight);
+
+        sf::RectangleShape btn(sf::Vector2f(btnW, buttonHeight));
+        btn.setPosition(btnX, btnY);
+
+        if (static_cast<int>(i) == hoveredPreset) {
+            btn.setFillColor(sf::Color(80, 120, 200, 200));
+        } else {
+            btn.setFillColor(sf::Color(60, 60, 60, 180));
+        }
+        btn.setOutlineColor(sf::Color(255, 255, 255, 40));
+        btn.setOutlineThickness(1.0f);
+        window.draw(btn);
+
+        char label[64];
+        snprintf(label, sizeof(label), "%zu. %s", i + 1, presets[i].name.c_str());
+        sf::Text btnText(label, uiFont, fontSize);
+        btnText.setFillColor(sf::Color(220, 220, 220));
+        btnText.setPosition(btnX + 8.0f, btnY + 5.0f);
+        window.draw(btnText);
+    }
+}
+
+void RendererSFML::drawHelpBar() {
+    const unsigned int fontSize = 12;
+    sf::Vector2u winSize = window.getSize();
+
+    std::string helpStr = "Drag: Pan | Scroll: Zoom | 1-" + std::to_string(presets.size()) +
+                          ": Presets | H: Help | I: Info | P: Presets | R: Reset | Esc: Quit";
+
+    sf::Text text(helpStr, uiFont, fontSize);
+    sf::FloatRect textBounds = text.getLocalBounds();
+
+    float barHeight = 28.0f;
+    float barY = winSize.y - barHeight;
+
+    sf::RectangleShape bg(sf::Vector2f(static_cast<float>(winSize.x), barHeight));
+    bg.setPosition(0.0f, barY);
+    bg.setFillColor(sf::Color(0, 0, 0, 180));
+    window.draw(bg);
+
+    text.setFillColor(sf::Color(180, 180, 180));
+    text.setPosition((winSize.x - textBounds.width) / 2.0f, barY + (barHeight - textBounds.height) / 2.0f - 2.0f);
+    window.draw(text);
 }
 
 void RendererSFML::handleEvents() {
@@ -275,6 +434,18 @@ void RendererSFML::handleEvents() {
             case sf::Event::KeyPressed:
                 if (event.key.code == sf::Keyboard::Escape) {
                     window.close();
+                } else if (event.key.code == sf::Keyboard::H) {
+                    showHelp = !showHelp;
+                } else if (event.key.code == sf::Keyboard::I) {
+                    showInfo = !showInfo;
+                } else if (event.key.code == sf::Keyboard::P) {
+                    showPresets = !showPresets;
+                } else if (event.key.code == sf::Keyboard::R) {
+                    if (onPresetSelected && !presets.empty()) onPresetSelected(1);
+                } else if (event.key.code >= sf::Keyboard::Num1 && event.key.code <= sf::Keyboard::Num9) {
+                    int idx = event.key.code - sf::Keyboard::Num1 + 1;
+                    if (onPresetSelected && idx >= 1 && idx <= static_cast<int>(presets.size()))
+                        onPresetSelected(idx);
                 }
                 break;
         }
@@ -340,6 +511,15 @@ void RendererSFML::handleWindowResize(int newWidth, int newHeight) {
 
 void RendererSFML::handleMousePress(int x, int y, bool leftButton) {
     if (leftButton) {
+        // Check if clicking on a preset button
+        if (showPresets) {
+            for (size_t i = 0; i < presetButtonBounds.size(); i++) {
+                if (presetButtonBounds[i].contains(static_cast<float>(x), static_cast<float>(y))) {
+                    if (onPresetSelected) onPresetSelected(static_cast<int>(i) + 1);
+                    return;
+                }
+            }
+        }
         isDragging = true;
         isInteracting = true;
         // Store the starting positions for the drag operation
@@ -373,6 +553,17 @@ void RendererSFML::handleMouseRelease(int x, int y) {
 }
 
 void RendererSFML::handleMouseMove(int x, int y) {
+    // Update preset hover state
+    hoveredPreset = -1;
+    if (showPresets) {
+        for (size_t i = 0; i < presetButtonBounds.size(); i++) {
+            if (presetButtonBounds[i].contains(static_cast<float>(x), static_cast<float>(y))) {
+                hoveredPreset = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
     if (isDragging) {
         // For panning, we calculate the new sprite position directly
         // relative to the start of the drag for a stable 1:1 mapping.
